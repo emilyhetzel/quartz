@@ -176,6 +176,7 @@ class GraphXfer;
 class Graph {
 public:
   Graph(Context *ctx);
+  Graph(Context *ctx, int num_qubits);
   Graph(Context *ctx, const DAG *dag);
   Graph(const Graph &graph);
   [[nodiscard]] std::unique_ptr<DAG> to_dag() const;
@@ -213,7 +214,10 @@ public:
                           bool enable_early_stop, bool use_rotation_merging_in_searching,
                           GateType target_rotation, std::string circuit_name = "",
                           int timeout = 86400 /*1 day*/);
-  void build_subcircuits(Op op, std::set<std::shared_ptr<Graph>> &subCircuits);
+  void build_subcircuits(Op start_op,
+                         int max_size,
+                         std::set<std::shared_ptr<Graph>> &subCircuits,
+                         std::set<size_t> &sub_hashmap);
   std::set<std::shared_ptr<Graph>>
   sub_optimize(const std::vector<GraphXfer *>& xfers, double sub_upper_bound, std::shared_ptr<Graph> &subCircuit, bool print_message, int timeout = 120);
   std::shared_ptr<Graph> optimize_reuse(const std::vector<GraphXfer *>&xfers,

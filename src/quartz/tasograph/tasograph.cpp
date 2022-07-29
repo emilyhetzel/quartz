@@ -73,6 +73,14 @@ void Graph::_construct_pos_2_logical_qubit() {
 
 Graph::Graph(Context *ctx) : context(ctx), special_op_guid(0) {}
 
+Graph::Graph(Context *ctx, int num_qubits) : context(ctx), special_op_guid(0) {
+    for (int i = 0; i < num_qubits; i++) {
+        auto input_qubit_op =
+                Op(get_next_special_op_guid(), ctx->get_gate(GateType::input_qubit));
+        input_qubit_op_2_qubit_idx[input_qubit_op] = i;
+    }
+}
+
 Graph::Graph(Context *ctx, const DAG *dag) : context(ctx), special_op_guid(0) {
   // Guid for input qubit and input parameter nodes
   int num_input_qubits = dag->get_num_qubits();
@@ -1570,11 +1578,75 @@ void Graph::draw_circuit(const std::string &src_file_name,
 }
 
 // Construct a set of all possible subcircuits up to a certain size present in an input circuit
-void Graph::build_subcircuits(Op op, std::set<std::shared_ptr<Graph>> &subCircuits) {
-    // Does circuit need to be passed in the signature, or can it be referred to without that?
-    auto subCircuit = Graph(context);
-    // Insert subCircuit into subCircuits
+void Graph::build_subcircuits(Op start_op, int max_size,
+                              std::set<std::shared_ptr<Graph>> &subCircuits,
+                              std::set<size_t> &sub_hashmap) {
+    // Initialize a single op graph
+    // Create input qubits
+    // Create reverse map of gate to input qubit
+    std::shared_ptr<Graph> single_op_graph(new Graph(context, (int)get_num_qubits()));
+    std::vector<Op> reverse_map(get_num_qubits());
+    for (auto &it : single_op_graph->input_qubit_op_2_qubit_idx) {
+        reverse_map[it.second] = it.first;
+    }
+    for (int i = 0; i < start_op.ptr->get_num_qubits(); i++) {
+        single_op_graph->add_edge(reverse_map[this->pos_2_logical_qubit[Pos(start_op, i)]],
+                                 start_op, 0, i);
+    }
 
+    std::queue<std::shared_ptr<Graph>> q;
+    q.push(single_op_graph);
+    while (!q.empty()) {
+        auto base = q.front();
+        q.pop();
+        // ignore graphs that have already been found and graphs that are already at max_size
+        if (sub_hashmap.find(base->hash()) == sub_hashmap.end() || base->gate_count() >= max_size) {
+            continue;
+        }
+
+        // subgraphs are inserted here, but this could be changed to occur at the end of each iteration,
+        // if the above conditional is also moved and slightly modified
+        subCircuits.insert(base);
+
+        // Iterate through each Op in the base subgraph
+        std::vector<Op> sub_nodes;
+        base->topology_order_ops(sub_nodes);
+        for (Op op : sub_nodes) {
+            if (!op.ptr->is_quantum_gate()) {
+                continue;
+            }
+            // Adding an inEdge requires the removal of a prior inEdge connecting an op and its input_qubit
+            for (Edge e : inEdges[op]) {
+                if (!base->has_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx)) {
+                    std::shared_ptr<Graph> new_graph(new Graph(*base));
+                    new_graph->remove_edge(reverse_map[this->pos_2_logical_qubit[Pos(op, e.dstIdx)]],
+                                          e.dstOp);
+                    new_graph->add_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx);
+                    for (int i = 0; i < e.srcOp.ptr->get_num_qubits(); i++) {
+                        new_graph->add_edge(reverse_map[this->pos_2_logical_qubit[Pos(op, i)]],
+                                           e.srcOp, 0, i);
+                    }
+                    // enqueue the new graph, check it when dequeued
+                    q.push(new_graph);
+                }
+            }
+            // OutEdges can be added directly
+            for (Edge e: outEdges[op]) {
+                if (!base->has_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx)) {
+                    std::shared_ptr<Graph> new_graph(new Graph(*base));
+                    new_graph->add_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx);
+                    // enqueue the new graph, check it when dequeued
+                    q.push(new_graph);
+                }
+            }
+        }
+    }
+//    auto single_op_dag = DAG(get_num_qubits(), this->constant_param_values.size());
+//    std::vector<int> qubit_indices;
+//    for (int i = 0; i < start_op.ptr->get_num_qubits(); i++) {
+//        qubit_indices.push_back(pos_2_logical_qubit[Pos(start_op, i)]);
+//    }
+//    single_op_dag.add_gate(qubit_indices, {}, start_op.ptr, nullptr);
 }
 
 std::set<std::shared_ptr<Graph>>
@@ -1583,15 +1655,20 @@ Graph::sub_optimize(const std::vector<GraphXfer *>& xfers, double sub_upper_boun
     std::set<std::shared_ptr<Graph>> equivalent_subgraphs;
     std::priority_queue<std::shared_ptr<Graph>, std::vector<std::shared_ptr<Graph>>, GraphCompare>
             candidates;
+
+    // Tracks already seen subcircuits
     std::set<size_t> hashmap;
+
+    // Copy input subcircuit
     std::shared_ptr<Graph> first_graph(new Graph(*subCircuit));
     // auto best_cost = subCircuit.total_cost();
 
     candidates.push(first_graph);
     hashmap.insert(hash());
 
-    int invoke_cnt = 0;
+    // int invoke_cnt = 0;
 
+    // Apply transformations, record results
     while (!candidates.empty()) {
         auto graph = candidates.top();
         candidates.pop();
@@ -1599,7 +1676,10 @@ Graph::sub_optimize(const std::vector<GraphXfer *>& xfers, double sub_upper_boun
         graph->topology_order_ops(all_nodes);
         for (auto xfer : xfers) {
             for (auto const &node : all_nodes) {
-                invoke_cnt++;
+                if (!node.ptr->is_quantum_gate()) {
+                    continue;
+                }
+                // invoke_cnt++;
                 auto new_graph =
                         graph->apply_xfer(xfer, node, context->has_parameterized_gate());
                 auto end = std::chrono::steady_clock::now();
@@ -1614,13 +1694,16 @@ Graph::sub_optimize(const std::vector<GraphXfer *>& xfers, double sub_upper_boun
                 auto new_hash = new_graph->hash();
                 auto new_cost = new_graph->total_cost();
                 if (new_cost > sub_upper_bound) {
+                    // Ignore transformations that increase cost too much
                     continue;
                 }
+
+                // Check if this graph has already been examined
                 if (hashmap.find(new_hash) == hashmap.end()) {
                     hashmap.insert(new_hash);
                     candidates.push(new_graph);
 
-                    // new
+                    // record result
                     equivalent_subgraphs.insert(new_graph);
                 } else {
                     continue;
@@ -1906,10 +1989,14 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
     candidates.push(best_graph);
     hashmap.insert(hash());
 
-    // new structure
+    // new structure: map of subcircuit functionality to lists of equivalent subcircuits
     std::unordered_map<std::size_t, std::set<std::shared_ptr<Graph>>> subCandidates;
 
-    int invoke_cnt = 0;
+    // int invoke_cnt = 0;
+
+    int max_subcircuit_size = 5;
+
+
     while (!candidates.empty()) {
 
         auto candidate = candidates.top();
@@ -1919,29 +2006,44 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
 
         // Construct a set of all subcircuits present in the circuit up to a certain size
         // Iterate through each node, build subcircuits starting from each node
-        // Reduce redundancy by only adding nodes to graphs by following outEdges of single-qubit gates
-        // Only look at inEdges of 2+ qubit gates
-        // The above still result in a little redundancy, but redundant graphs shouldn't be inserted into the set
+        // Reduce redundancy by not building upon subcircuits that have already been constructed starting from
+        // a different node.
+
+        // sub_hashmap needs to persist through each iteration, subcircuits does not
+        std::set<size_t> sub_hashmap;
+
         for (Op op: all_nodes) {
-            std::set<std::shared_ptr<Graph>> subCircuits{};
-            build_subcircuits(op, subCircuits);
-            for (std::shared_ptr<Graph> subCircuit: subCircuits) {
+            if (op.ptr->is_quantum_gate()) {
+                continue;
+            }
+            std::set<std::shared_ptr<Graph>> subcircuits{};
+            build_subcircuits(op, max_subcircuit_size, subcircuits, sub_hashmap);
+            for (std::shared_ptr<Graph> subCircuit: subcircuits) {
+                // find/insert relevant information in subCandidates
                 auto subCircuitDag = subCircuit->to_dag();
-                size_t dagHash = subCircuitDag->hash(context);
+                size_t dagHash = subCircuitDag->hash(context);  // keys to subCandidates
                 if (subCandidates.find(dagHash) == subCandidates.end()) {
-                    // Check that the correct method is used below
+                    // No equivalent subcircuit has yet been examined.
+                    // Transform the subcircuit by various means, record result in subCandidates
                     double subCostUpperBound = alpha * subCircuit->total_cost();
                     subCandidates.insert({dagHash,
                                           sub_optimize(xfers, subCostUpperBound,
                                                        subCircuit, true)});
                 } else if (subCandidates[dagHash].find(subCircuit) ==
                            subCandidates[dagHash].end()) {
+                    // An equivalent subcircuit has already been examined, no need to repeat prior work
+                    // Add this subCircuit to the relevant entry in subCandidates
+                    // THIS MAY NEED TO BE CHANGED: a problem may arise if a smaller equivalent subcircuit is found first
+                    // Counterpoint: the lower cost equivalent circuits will be the only considered in the above speculated case;
+                    // this may be a performance enhancement at the cost of search space breadth
                     subCandidates[dagHash].insert(subCircuit);
                 }
                 for (const auto& subCandidate: subCandidates[dagHash]) {
                     if (subCandidate == subCircuit) {
+                        // skip null transformations
                         continue;
                     }
+                    // create transfomration
                     auto src_dag = subCircuit->to_dag();
                     auto dst_dag = subCandidate->to_dag();
                     auto xfer = GraphXfer(context, src_dag.get(), dst_dag.get());
@@ -1949,9 +2051,11 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
                     auto new_hash = new_graph->hash();
                     auto new_cost = new_graph->total_cost();
                     if (new_cost > cost_upper_bound) {
+                        // ignore graphs that are too expensive
                         continue;
                     }
                     if (hashmap.find(new_hash) == hashmap.end()) {
+                        // resultant graph had not yet been discovered
                         hashmap.insert(new_hash);
                         candidates.push(new_graph);
                         if (new_cost < best_cost) {
@@ -1959,6 +2063,7 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
                             best_graph = new_graph;
                         }
                     } else {
+                        // resultant graph had already been discovered by other means
                         continue;
                     }
                 }
