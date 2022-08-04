@@ -1581,6 +1581,7 @@ void Graph::draw_circuit(const std::string &src_file_name,
 void Graph::build_subcircuits(Op start_op, int max_size,
                               std::set<std::shared_ptr<Graph>> &subCircuits,
                               std::set<size_t> &sub_hashmap) {
+    std::cout << "Building subcircuits...\n";
     // Initialize a single op graph
     // Create input qubits
     // Create reverse map of gate to input qubit
@@ -1597,28 +1598,35 @@ void Graph::build_subcircuits(Op start_op, int max_size,
     std::queue<std::shared_ptr<Graph>> q;
     q.push(single_op_graph);
     while (!q.empty()) {
+
         auto base = q.front();
         q.pop();
         // ignore graphs that have already been found and graphs that are already at max_size
-        if (sub_hashmap.find(base->hash()) == sub_hashmap.end() || base->gate_count() >= max_size) {
+        if (sub_hashmap.find(base->hash()) != sub_hashmap.end() || base->gate_count() >= max_size) {
+            std::cout << "Duplicate subgraph." << std::endl;
             continue;
         }
 
         // subgraphs are inserted here, but this could be changed to occur at the end of each iteration,
         // if the above conditional is also moved and slightly modified
         subCircuits.insert(base);
+        sub_hashmap.insert(base->hash());
+        std::cout << "Subcircuit recorded." << std::endl;
 
         // Iterate through each Op in the base subgraph
         std::vector<Op> sub_nodes;
         base->topology_order_ops(sub_nodes);
         for (Op op : sub_nodes) {
             if (!op.ptr->is_quantum_gate()) {
+                std::cout << "Skipping non-gate Op." << std::endl;
                 continue;
             }
             // Adding an inEdge requires the removal of a prior inEdge connecting an op and its input_qubit
-            for (Edge e : inEdges[op]) {
+            for (Edge e : this->inEdges[op]) {
+                std::cout << "Searching inEdges." << std::endl;
                 if (!base->has_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx)) {
                     std::shared_ptr<Graph> new_graph(new Graph(*base));
+                    std::cout << "Adding an inEdge." << std::endl;
                     new_graph->remove_edge(reverse_map[this->pos_2_logical_qubit[Pos(op, e.dstIdx)]],
                                           e.dstOp);
                     new_graph->add_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx);
@@ -1626,27 +1634,43 @@ void Graph::build_subcircuits(Op start_op, int max_size,
                         new_graph->add_edge(reverse_map[this->pos_2_logical_qubit[Pos(op, i)]],
                                            e.srcOp, 0, i);
                     }
+                    std::cout << "InEdge added." << std::endl;
                     // enqueue the new graph, check it when dequeued
                     q.push(new_graph);
                 }
             }
             // OutEdges can be added directly
-            for (Edge e: outEdges[op]) {
+            for (Edge e : this->outEdges[op]) {
+                std::cout << "Searching outEdges." << std::endl;
                 if (!base->has_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx)) {
+                    std::cout << "Adding outEdge." << std::endl;
                     std::shared_ptr<Graph> new_graph(new Graph(*base));
                     new_graph->add_edge(e.srcOp, e.dstOp, e.srcIdx, e.dstIdx);
                     // enqueue the new graph, check it when dequeued
+                    std::cout << "OutEdge added." << std::endl;
                     q.push(new_graph);
                 }
             }
         }
     }
+
+    std::cout << "number of subcircuits: " << subCircuits.size() << "\n" << std::endl;
+
 //    auto single_op_dag = DAG(get_num_qubits(), this->constant_param_values.size());
 //    std::vector<int> qubit_indices;
 //    for (int i = 0; i < start_op.ptr->get_num_qubits(); i++) {
 //        qubit_indices.push_back(pos_2_logical_qubit[Pos(start_op, i)]);
 //    }
 //    single_op_dag.add_gate(qubit_indices, {}, start_op.ptr, nullptr);
+}
+
+// Construct a set of sets representing subcircuits, each set containing the guids of ops in  the subcircuit
+void Graph::list_subcircuit_ops(Op start_op, int max_size,
+                                std::list<std::shared_ptr<std::set<size_t>>> &subCircuits,
+                                std::set<size_t> &sub_hashmap) {
+    auto num_entry = subCircuits.size();
+    auto start_guid = start_op.guid;
+    auto singleton = new std::vector<Op>;
 }
 
 std::set<std::shared_ptr<Graph>>
@@ -1998,6 +2022,7 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
 
 
     while (!candidates.empty()) {
+        std::cout<< "Candidates loop entered." << std::endl;
 
         auto candidate = candidates.top();
         candidates.pop();
@@ -2013,7 +2038,7 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
         std::set<size_t> sub_hashmap;
 
         for (Op op: all_nodes) {
-            if (op.ptr->is_quantum_gate()) {
+            if (!op.ptr->is_quantum_gate()) {
                 continue;
             }
             std::set<std::shared_ptr<Graph>> subcircuits{};
@@ -2043,7 +2068,7 @@ std::shared_ptr<Graph> Graph::optimize_reuse(const std::vector<GraphXfer *>& xfe
                         // skip null transformations
                         continue;
                     }
-                    // create transfomration
+                    // create transformation
                     auto src_dag = subCircuit->to_dag();
                     auto dst_dag = subCandidate->to_dag();
                     auto xfer = GraphXfer(context, src_dag.get(), dst_dag.get());

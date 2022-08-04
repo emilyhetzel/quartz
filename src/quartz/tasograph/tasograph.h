@@ -218,6 +218,9 @@ public:
                          int max_size,
                          std::set<std::shared_ptr<Graph>> &subCircuits,
                          std::set<size_t> &sub_hashmap);
+  void list_subcircuit_ops(Op start_op, int max_size,
+                                  std::list<std::shared_ptr<std::set<size_t>>> &subCircuits,
+                                  std::set<size_t> &sub_hashmap);
   std::set<std::shared_ptr<Graph>>
   sub_optimize(const std::vector<GraphXfer *>& xfers, double sub_upper_bound, std::shared_ptr<Graph> &subCircuit, bool print_message, int timeout = 120);
   std::shared_ptr<Graph> optimize_reuse(const std::vector<GraphXfer *>&xfers,
