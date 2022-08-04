@@ -12,7 +12,7 @@ int main() {
 
   EquivalenceSet eqs;
   // Load equivalent dags from file
-  if (!eqs.load_json(&ctx, "../Nam_complete_ECC_set.json")) {
+  if (!eqs.load_json(&ctx, "../Nam_4_3_complete_ECC_set.json")) {
     std::cout << "Failed to load equivalence file." << std::endl;
     assert(false);
   }
@@ -34,5 +34,9 @@ int main() {
   }
   std::cout << "number of xfers: " << xfers.size() << std::endl;
 
-  graph->optimize(xfers, graph->gate_count() * 1.05, "barenco_tof_3", true);
+  // graph->optimize(xfers, graph->gate_count() * 1.05, "barenco_tof_3", true);
+  // ~140 seconds to drop below 50 gates, 32247
+
+  graph->optimize_reuse(xfers, graph->gate_count() * 1.05, "barenco_tof_3", true);
+  // ~140 seconds to drop below 50 gates, candidate 32247
 }
